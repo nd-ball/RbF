@@ -24,6 +24,9 @@ and Effective Training of Neural Networks. EMNLP 2017.
 
 Contact
 Hadi Amiri
+
+
+9/2021: forked for BERT experiments
 '''
 
 import numpy as np
@@ -35,6 +38,12 @@ from rbf_keras.layers import Dense, Activation, Embedding
 from rbf_keras.layers import LSTM
 from rbf_keras.datasets import imdb
 from rbf_keras.models import load_model
+
+import tensorflow as tf
+from datasets import load_dataset
+from transformers import AutoTokenizer, TFAutoModelForSequenceClassification
+
+
 
 
 # PART 0. parameters setting
@@ -49,30 +58,61 @@ batch_size = 1 # batch size. Greater values treat all instances in a batch simil
 
 # PART 1. load some data 
 print('Loading data...')
-(X_train, y_train), (X_test, y_test) = imdb.load_data(nb_words=max_features)
-print(len(X_train), 'train sequences')
-print(len(X_test), 'test sequences')
-print('Pad sequences (samples x time)')
-X_train = sequence.pad_sequences(X_train, maxlen=maxlen)
-X_test = sequence.pad_sequences(X_test, maxlen=maxlen)
-print('X_train shape:', X_train.shape)
-print('X_test shape:', X_test.shape)
+#(X_train, y_train), (X_test, y_test) = imdb.load_data(nb_words=max_features)
+#print(len(X_train), 'train sequences')
+#print(len(X_test), 'test sequences')
+#print('Pad sequences (samples x time)')
+#X_train = sequence.pad_sequences(X_train, maxlen=maxlen)
+#X_test = sequence.pad_sequences(X_test, maxlen=maxlen)
+#print('X_train shape:', X_train.shape)
+#print('X_test shape:', X_test.shape)
+
+datasets = load_dataset('glue', 'mrpc')
+tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+
+
+def tokenize_function(examples):
+    return tokenizer(examples["text"], padding="max_length", truncation=True)
+
+tokenized_datasets = datasets.map(tokenize_function, batched=True)
+
+full_train_dataset = tokenized_datasets["train"]
+full_eval_dataset = tokenized_datasets["test"]
+
+tf_train_dataset = full_train_dataset.remove_columns(["text"]).with_format("tensorflow")
+tf_eval_dataset = full_eval_dataset.remove_columns(["text"]).with_format("tensorflow")
+
+
+train_features = {x: tf_train_dataset[x].to_tensor() for x in tokenizer.model_input_names}
+train_tf_dataset = tf.data.Dataset.from_tensor_slices((train_features, tf_train_dataset["label"]))
+train_tf_dataset = train_tf_dataset.shuffle(len(tf_train_dataset)).batch(8)
+
+eval_features = {x: tf_eval_dataset[x].to_tensor() for x in tokenizer.model_input_names}
+eval_tf_dataset = tf.data.Dataset.from_tensor_slices((eval_features, tf_eval_dataset["label"]))
+eval_tf_dataset = eval_tf_dataset.batch(8)
 
 
 
 # PART 2. create a neural network
 print('Build model...')
-model = Sequential()
-model.add(Embedding(max_features, embedding_dims))
-model.add(LSTM(hidden_size))  # try using a GRU instead, for fun
-model.add(Dense(1))
-model.add(Activation('sigmoid'))  # sigmoid works better for binary classification  
-model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+model = TFAutoModelForSequenceClassification.from_pretrained("bert-base-cased", num_labels=2)
+
+
+#model = Sequential()
+#model.add(Embedding(max_features, embedding_dims))
+#model.add(LSTM(hidden_size))  # try using a GRU instead, for fun
+#model.add(Dense(1))
+#model.add(Activation('sigmoid'))  # sigmoid works better for binary classification  
+#model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(learning_rate=5e-5),
+    loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+    metrics=tf.metrics.SparseCategoricalAccuracy(),
+)
 
 # PART 3. save the model
 model.save('my_model.h5') 
 del model 
-
 
 
 # PART 4. load the model and train it with standard training 
@@ -80,7 +120,7 @@ print('-------------------------------')
 print('rote or standard training')
 model = load_model('my_model.h5')
 start = time.time()
-history = model.fit(X_train, y_train, batch_size=batch_size, nb_epoch=nb_epoch, validation_data=(X_test, y_test))
+history = model.fit(train_tf_dataset, batch_size=batch_size, nb_epoch=nb_epoch, validation_data=eval_tf_dataset)
 rote_time = time.time() - start
 del model
 
@@ -92,7 +132,7 @@ nu = 0.5  # recall confidence, RbF scheduler estimates the maximum delay such th
 print('rbf training with kern = ', kern, ', nu = ', nu)             
 model = load_model('my_model.h5')
 start = time.time()
-history, tipe = model.fit(X_train, y_train, batch_size=batch_size, nb_epoch=nb_epoch, validation_data=(X_test, y_test), kern=kern, nu=nu)
+history, tipe = model.fit(train_tf_dataset, batch_size=batch_size, nb_epoch=nb_epoch, validation_data=eval_tf_dataset, kern=kern, nu=nu)
 rbf_time = time.time() - start
 del model
 
